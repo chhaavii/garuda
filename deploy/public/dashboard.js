@@ -450,20 +450,26 @@ function renderSources(s) {
 }
 
 function renderChannels(s) {
-  const configured = cfg?.channels_configured;
+  // Per-channel: what is configured, and what the last run actually did.
+  const last = s?.dispatch || {};
   const rows = [
-    ["Discord webhook", configured ? "configured" : "no secret"],
-    ["Infobip SMS", configured ? "configured" : "no secret"],
-    ["SendGrid email", configured ? "configured" : "no secret"],
-    ["Pi LED / GPIO", "local engine only"],
+    ["Discord webhook", cfg?.discord_configured ? "configured" : "no secret", last.discord],
+    ["Infobip SMS", cfg?.sms_configured ? "configured" : "no secret", last.sms],
+    ["SendGrid email", cfg?.email_configured ? "configured" : "no secret", last.email],
+    ["Pi LED / GPIO", "local engine only", null],
   ];
   $("channels").innerHTML = rows
-    .map(
-      ([name, state]) =>
-        `<li><span class="name"><i class="pip ${state === "configured" ? "sent" : "pending"}"></i>${name}</span><span class="state">${state}</span></li>`
-    )
+    .map(([name, state, result]) => {
+      const shown = result || state;
+      const ok = shown === "sent" || shown === "configured";
+      return `<li><span class="name"><i class="pip ${ok ? "sent" : "pending"}"></i>${name}</span><span class="state">${shown}</span></li>`;
+    })
     .join("");
-  $("channels-note").textContent = s.simulated ? "this run was simulated" : "";
+  $("channels-note").textContent = s?.dispatch
+    ? "delivery attempted for this run"
+    : s.simulated
+      ? "this run was simulated"
+      : "";
 }
 
 function renderRaw(s) {

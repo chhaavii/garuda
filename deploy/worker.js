@@ -488,6 +488,78 @@ async function buildStatus(env, cfg, { forceHigh = false } = {}) {
   return status;
 }
 
+/* -------------------------------------------------------------- delivery -- */
+/**
+ * Push a HIGH alert out to the configured channels.
+ *
+ * Mirrors dispatch() in engine.py. Every channel is optional and reports its
+ * own outcome, so a missing secret is visible instead of silently swallowed.
+ */
+async function dispatch(status, env) {
+  if (status.severity !== "HIGH") return { skipped: "not HIGH" };
+  const sent = {};
+
+  if (env.DISCORD_WEBHOOK_URL) {
+    try {
+      const resp = await fetch(env.DISCORD_WEBHOOK_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ content: status.message }),
+      });
+      sent.discord = resp.ok ? "sent" : `failed(${resp.status})`;
+    } catch (err) {
+      sent.discord = `error: ${String(err).slice(0, 80)}`;
+    }
+  } else {
+    sent.discord = "no secret";
+  }
+
+  if (env.INFOBIP_API_KEY && env.ALERT_SMS_TO) {
+    try {
+      const resp = await fetch("https://pdlnye.api.infobip.com/sms/3/messages", {
+        method: "POST",
+        headers: { authorization: `App ${env.INFOBIP_API_KEY}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          messages: [
+            {
+              destinations: [{ to: env.ALERT_SMS_TO }],
+              sender: env.INFOBIP_SENDER || "Garuda",
+              content: { text: status.message.slice(0, 600) },
+            },
+          ],
+        }),
+      });
+      sent.sms = resp.ok ? "sent" : `failed(${resp.status})`;
+    } catch (err) {
+      sent.sms = `error: ${String(err).slice(0, 80)}`;
+    }
+  } else {
+    sent.sms = "no secret";
+  }
+
+  if (env.SENDGRID_API_KEY && env.ALERT_EMAIL_TO) {
+    try {
+      const resp = await fetch("https://api.sendgrid.com/v3/mail/send", {
+        method: "POST",
+        headers: { authorization: `Bearer ${env.SENDGRID_API_KEY}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          personalizations: [{ to: [{ email: env.ALERT_EMAIL_TO }] }],
+          from: { email: env.SENDGRID_FROM || "alerts@example.org" },
+          subject: `Garuda: ${status.severity} fire risk`,
+          content: [{ type: "text/plain", value: status.message }],
+        }),
+      });
+      sent.email = resp.ok ? "sent" : `failed(${resp.status})`;
+    } catch (err) {
+      sent.email = `error: ${String(err).slice(0, 80)}`;
+    }
+  } else {
+    sent.email = "no secret";
+  }
+
+  return sent;
+}
+
 /* ---------------------------------------------------------------- routes -- */
 export default {
   async fetch(request, env) {
@@ -506,6 +578,7 @@ export default {
     if (url.pathname === "/simulate") {
       if (request.method !== "POST") return json({ error: "use POST" }, 405);
       const status = await buildStatus(env, cfg, { forceHigh: true });
+      status.dispatch = await dispatch(status, env);
       return json({ result: "success", simulated: true, status });
     }
 
@@ -560,6 +633,9 @@ export default {
         cesium_ion_token: env.CESIUM_ION_TOKEN || null,
         firms_configured: !!env.FIRMS_MAP_KEY,
         channels_configured: !!(env.DISCORD_WEBHOOK_URL && env.INFOBIP_API_KEY && env.SENDGRID_API_KEY),
+        discord_configured: !!env.DISCORD_WEBHOOK_URL,
+        sms_configured: !!(env.INFOBIP_API_KEY && env.ALERT_SMS_TO),
+        email_configured: !!(env.SENDGRID_API_KEY && env.ALERT_EMAIL_TO),
         db_ready: !!env.DB,
         voice_configured: !!(env.INFOBIP_API_KEY && env.INFOBIP_VOICE_TO),
         voice_languages: VOICE_LANGS,

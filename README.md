@@ -48,7 +48,7 @@ train_baseline.py    optional ML baseline → ml_model.json (OFF by default)
 | `GET /dashboard` | operator dashboard |
 | `GET /status` | full assessment: severity, risk score, physics, fired rules, 12 h timeline |
 | `GET /history` | session history (per worker isolate) |
-| `POST /simulate` | forced HIGH scenario, badged SIMULATED |
+| `POST /simulate` | forced HIGH scenario, badged SIMULATED, then dispatches the configured channels and returns `status.dispatch` |
 | `GET /fires.geojson` | detections in the 25 km watch ring |
 | `GET /weather.json` | wind/temp at the centre |
 | `GET /config.json` | public config; exposes the Cesium token only if configured |
@@ -70,9 +70,9 @@ you want real detections:
 |---|---|
 | `FIRMS_MAP_KEY` | NASA FIRMS detections (otherwise SIMULATED) |
 | `CESIUM_ION_TOKEN` | Cesium terrain/imagery; without it the map uses OSM on a flat ellipsoid |
-| `DISCORD_WEBHOOK_URL` | Discord alerts (local engine) |
-| `INFOBIP_API_KEY`, `INFOBIP_SENDER`, `ALERT_SMS_TO` | SMS alerts (local engine) |
-| `SENDGRID_API_KEY`, `ALERT_EMAIL_TO` | Email alerts (local engine) |
+| `DISCORD_WEBHOOK_URL` | Discord alerts (Worker and local engine) |
+| `INFOBIP_API_KEY`, `INFOBIP_SENDER`, `ALERT_SMS_TO` | SMS alerts (Worker and local engine) |
+| `SENDGRID_API_KEY`, `ALERT_EMAIL_TO`, `SENDGRID_FROM` | Email alerts (Worker and local engine) |
 | `INFOBIP_VOICE_TO`, `INFOBIP_VOICE_FROM` | Infobip Voice outbound call target and caller ID; without them `/voice` returns the script only |
 
 The local engine reads the same names from the environment, then from `config.secrets.json`
