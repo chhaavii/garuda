@@ -1,0 +1,7 @@
+# local secrets - never committed
+config.secrets.json
+.env
+.dev.vars
+*.log
+__pycache__/
+node_modules/

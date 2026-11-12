@@ -1,0 +1,22 @@
+{
+  "centre": { "lat": 12.9716, "lng": 77.5946 },
+  "geofence_km": 5,
+  "watch_km": 25,
+  "fuel_class": "urban",
+  "fuel_multiplier": { "urban": 0.6, "grass": 1.2, "scrub": 1.0, "forest": 0.9 },
+  "thresholds": { "medium": 35, "high": 65, "hard_override_km": 2 },
+  "cycle_minutes": 15,
+  "forecast_hours": 12,
+  "watch_horizon_hours": 6,
+  "watch_cooldown_hours": 3,
+  "timezone": "Asia/Kolkata",
+  "design": {
+    "background": "#080d0b",
+    "panel": "#101a15",
+    "text": "#f3efe6",
+    "ember": ["#ff6b2b", "#ff9a3c"],
+    "severity": { "low": "#e8c547", "medium": "#ff9a3c", "high": "#ff4438" }
+  },
+  "ml": { "enabled": false, "note": "Experimental baseline, never drives alerts unless enabled." },
+  "air": { "o2_baseline_percent": 20.9, "smoke_pm2_5_threshold": 60, "smoke_co_threshold": 4000 }
+}

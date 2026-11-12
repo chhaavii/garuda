@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Garuda — Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Antonio:wght@500;600;700&family=Playfair+Display:ital,wght@1,500&family=Space+Grotesk:wght@400;500;600&family=JetBrains+Mono:wght@400;600&family=Noto+Sans+Kannada:wght@500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/cesium/1.119.0/Widgets/widgets.css" />
+  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="dash.css" />
+</head>
+<body class="dash" data-bg="dim">
+  <div class="bg" aria-hidden="true">
+    <canvas id="bg-terrain"></canvas>
+    <canvas id="bg-heat"></canvas>
+    <canvas id="bg-embers"></canvas>
+    <div class="bg-grain"></div>
+  </div>
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="flame" aria-hidden="true">🔥</span>
+      <div>
+        <h1>Garuda</h1>
+        <p class="kannada">ಗರುಡ · fire protection</p>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <a class="top-link mono tiny" href="/">← landing</a>
+      <span id="live-dot" class="dot"></span>
+      <span id="engine-status">connecting…</span>
+      <span class="sep">·</span>
+      <span id="last-updated" class="mono tiny">—</span>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section class="hero card">
+      <div>
+        <p class="kicker">current risk</p>
+        <div class="severity-row">
+          <span id="severity-badge" class="badge low">LOW</span>
+          <span id="risk-score" class="risk-number">—</span>
+          <span class="muted tiny">/100 · <span id="severity-sub">initialising</span></span>
+        </div>
+        <p id="alert-message" class="message">Waiting for the first assessment…</p>
+        <p id="impact-line" class="impact mono">reading the nearest detection…</p>
+        <ul id="alert-steps" class="steps"></ul>
+        <div class="actions">
+          <button id="speak-btn" class="btn primary">🔊 Speak alert</button>
+          <select id="speak-lang" class="lang-select mono" aria-label="Broadcast language"></select>
+          <button id="copy-btn" class="btn ghost">Copy alert</button>
+          <button id="simulate-btn" class="btn ghost">⚡ Simulate high</button>
+          <button id="refresh-btn" class="btn ghost">Refresh</button>
+        </div>
+        <p class="note tiny"><span id="voice-mode" class="mono">text-to-speech broadcast · browser voice</span></p>
+        <div id="drivers" class="drivers"></div>
+      </div>
+      <div class="cycle-box">
+        <p class="kicker">next cycle in</p>
+        <div id="cycle-countdown" class="countdown mono">--:--</div>
+        <div class="progress"><span id="cycle-progress"></span></div>
+        <p class="muted tiny">15-minute Open-Meteo cycle</p>
+        <div class="source-badges" id="source-badges"></div>
+      </div>
+    </section>
+
+    <section class="kpis">
+      <div class="card kpi"><span class="kpi-label">risk now</span><strong id="kpi-risk">—</strong></div>
+      <div class="card kpi"><span class="kpi-label">fires in 25 km</span><strong id="kpi-fires">—</strong></div>
+      <div class="card kpi"><span class="kpi-label">FWI</span><strong id="kpi-fwi">—</strong></div>
+      <div class="card kpi"><span class="kpi-label">time to HIGH</span><strong id="kpi-tth">—</strong></div>
+    </section>
+
+    <section class="grid main-grid">
+      <div class="card map-card">
+        <div class="card-head">
+          <h2>Threat map</h2>
+          <div class="map-tools">
+            <input id="map-search" class="map-search mono" type="text" placeholder="lat, lng → fly" aria-label="Fly to coordinates" />
+            <button id="map-home" class="btn ghost small">Home</button>
+            <button id="map-replay" class="btn ghost small">Replay last 24 h</button>
+          </div>
+        </div>
+        <div id="cesium" class="cesium-box"></div>
+        <div class="map-foot mono tiny">
+          <span id="map-badge">loading…</span>
+          <span id="map-updated"></span>
+          <span class="attrib-note">Cesium ion / © OpenStreetMap contributors · NASA FIRMS</span>
+        </div>
+      </div>
+
+      <div class="stack">
+        <div class="card">
+          <div class="card-head">
+            <h2>Fuzzy risk</h2>
+            <span class="muted tiny">27 rules · centroid</span>
+          </div>
+          <div class="meter"><span id="risk-meter"></span></div>
+          <ul class="rules" id="fired-rules"></ul>
+          <p class="note" id="override-note" hidden></p>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>Next 12 hours</h2>
+            <span id="tth-chip" class="badge low">—</span>
+          </div>
+          <svg id="timeline" viewBox="0 0 320 96" role="img" aria-label="Forecast risk timeline"></svg>
+          <p class="muted tiny" id="timeline-note">model forecast, not a guarantee</p>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h2>Delivery channels</h2><span id="channels-note" class="muted tiny"></span></div>
+          <ul id="channels" class="channels"></ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="grid two-grid">
+      <div class="card">
+        <div class="card-head">
+          <h2>Community reports</h2>
+          <span id="reports-chip" class="chip muted">0 near you</span>
+        </div>
+        <p class="note">
+          A satellite pass can be hours old. If you can see it, say so - reports are unverified ground truth
+          and they nudge the score, clearly labelled.
+        </p>
+        <div class="report-actions">
+          <button id="report-smoke" class="btn ghost">💨 I can see smoke</button>
+          <button id="report-fire" class="btn ghost">🔥 I can see fire</button>
+          <button id="report-clear" class="btn ghost small">✓ It is gone</button>
+        </div>
+        <p id="reports-status" class="note tiny mono">location: area centre (tap a report button to use GPS)</p>
+        <ul id="reports-list" class="reports"></ul>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>Family check-in</h2>
+          <span id="checkin-summary" class="chip muted">0 safe · 0 help</span>
+        </div>
+        <p class="note">
+          Queued offline and sent when the connection returns. Escalation is by channel, not by magic:
+          nobody is auto-called without a phone number on file.
+        </p>
+        <div class="checkin-row">
+          <input id="checkin-name" class="map-search mono" type="text" maxlength="40" placeholder="your name" aria-label="Name for check-in" />
+          <button id="checkin-safe" class="btn ghost">✅ I'm safe</button>
+          <button id="checkin-help" class="btn ghost">🆘 Need help</button>
+        </div>
+        <ul id="checkins-list" class="reports"></ul>
+      </div>
+    </section>
+
+    <section class="grid two-grid">
+      <div class="card">
+        <div class="card-head">
+          <h2>Routine disruption</h2>
+          <span class="muted tiny">commute · school · return</span>
+        </div>
+        <ul id="routine-list" class="routine"></ul>
+        <p class="note tiny">Read off the same 12-hour forecast, so you know which part of the day the risk actually disturbs.</p>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>Voice broadcast</h2>
+          <span id="voice-chip" class="chip muted">browser TTS</span>
+        </div>
+        <p id="voice-script" class="voice-script mono">—</p>
+        <div class="checkin-row">
+          <button id="voice-say" class="btn primary">🔊 Read it aloud</button>
+          <button id="voice-call" class="btn ghost">📞 Place call</button>
+        </div>
+        <p class="note tiny" id="voice-note">
+          Browser speech synthesis works offline and costs nothing. The call button uses the Infobip Voice API when a key and a
+          verified number are configured, and otherwise reports the exact script it would have read.
+        </p>
+      </div>
+    </section>
+
+    <section class="grid two-grid">
+      <div class="card">
+        <div class="card-head"><h2>Physics</h2><span class="muted tiny">Canadian FWI · units shown</span></div>
+        <div id="physics-grid" class="physics-grid"></div>
+        <div id="weather-chips" class="chips left"></div>
+        <p class="note">
+          FFMC fine fuel moisture · DMC duff · DC drought · ISI spread · BUI fuel available ·
+          FWI intensity. Slope and fuel class are user-set; dT/dt is the observed 3-hour heating rate.
+        </p>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>Local air</h2><span id="smoke-chip" class="chip muted">no smoke flag</span></div>
+        <div id="air-grid" class="physics-grid"></div>
+        <p class="note" id="o2-note">
+          Outdoor oxygen stays near 20.9%, so this is context, not a predictor. It does not change the risk score.
+        </p>
+      </div>
+    </section>
+
+    <section class="grid two-grid">
+      <div class="card">
+        <div class="card-head"><h2>Backtest</h2><span id="bt-chip" class="muted tiny">12-month window</span></div>
+        <div id="bt-grid" class="bt-grid"></div>
+        <p class="note" id="bt-note">Reading /backtest…</p>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>Engine log</h2>
+          <span class="muted tiny">session history</span>
+        </div>
+        <div id="engine-log" class="log mono"></div>
+        <div id="history-bars" class="bars"></div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <span>Garuda · NASA FIRMS + Open-Meteo · $0 stack · NOVA 2026 Track D</span>
+    <button id="raw-toggle" class="btn linkish mono tiny">show raw status</button>
+  </footer>
+  <pre id="raw" class="raw mono" hidden></pre>
+  <div id="toast-host" class="toasts"></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/cesium/1.119.0/Cesium.js"></script>
+  <script src="bg.js" defer></script>
+  <script type="module" src="dashboard.js"></script>
+</body>
+</html>

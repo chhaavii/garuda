@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Garuda — Seen from space. Warned on your phone.</title>
+  <meta name="description" content="Free NASA fire data and live weather turned into a plain-language warning before it reaches your street. Total cost: zero." />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Antonio:wght@500;600;700&family=Playfair+Display:ital,wght@1,500;1,600&family=Space+Grotesk:wght@400;500;600&family=JetBrains+Mono:wght@400;600&family=Noto+Sans+Kannada:wght@500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/cesium/1.119.0/Widgets/widgets.css" />
+  <link rel="stylesheet" href="landing.css" />
+</head>
+<body>
+  <!-- fixed background layers -->
+  <div class="bg" aria-hidden="true">
+    <canvas id="bg-terrain"></canvas>
+    <canvas id="bg-heat"></canvas>
+    <canvas id="bg-embers"></canvas>
+    <div class="bg-grain"></div>
+    <div class="bg-vignette"></div>
+  </div>
+
+  <header class="nav">
+    <a class="nav-brand" href="/">
+      <span class="flame" aria-hidden="true">🔥</span>
+      <span class="nav-brand-text">
+        <strong>Garuda</strong>
+        <em lang="kn">ಗರುಡ</em>
+      </span>
+    </a>
+    <nav class="nav-links" id="nav-menu" aria-label="Sections">
+      <a href="#gap">Problem</a>
+      <a href="#story">How it thinks</a>
+      <a href="#try">Try it</a>
+      <a href="#numbers">Evidence</a>
+      <a class="nav-menu-cta" href="/dashboard">Open dashboard</a>
+    </nav>
+    <a class="btn primary nav-cta" href="/dashboard">Open live dashboard</a>
+    <button
+      class="nav-toggle"
+      id="nav-toggle"
+      type="button"
+      aria-expanded="false"
+      aria-controls="nav-menu"
+      aria-label="Open section menu"
+    >
+      <span></span><span></span><span></span>
+    </button>
+  </header>
+
+  <main>
+    <!-- 1. HERO -->
+    <section class="hero">
+      <p class="lockup" lang="kn">ಗರುಡ</p>
+      <p class="eyebrow mono">NASA FIRMS · OPEN-METEO · FUZZY INFERENCE · $0 STACK</p>
+      <h1>
+        <span class="line1">Seen from space.</span>
+        <span class="line2">Warned on your phone.</span>
+      </h1>
+      <p class="sub">
+        Free NASA fire data and live weather, turned into a plain-language warning before it
+        reaches your street. Total cost: zero.
+      </p>
+
+      <div class="hero-actions">
+        <a class="btn primary" href="/dashboard">Open live dashboard</a>
+        <a class="btn ghost" href="#story">See how it works</a>
+      </div>
+
+      <div class="chip live" id="live-chip">
+        <span class="chip-dot" id="chip-dot"></span>
+        <span class="mono" id="chip-text">reading engine…</span>
+      </div>
+
+      <dl class="hero-facts mono">
+        <div><dt>cycle</dt><dd>15 min</dd></div>
+        <div><dt>channels</dt><dd>4</dd></div>
+        <div><dt>cost</dt><dd>$0</dd></div>
+      </dl>
+    </section>
+
+    <!-- 2. THE GAP -->
+    <section id="gap" class="section">
+      <p class="kicker mono">The gap</p>
+      <h2 class="section-title">The warning exists. It just never reaches the household.</h2>
+      <div class="cards">
+        <article class="card">
+          <p class="card-num mono">01</p>
+          <h3>Satellites see it first</h3>
+          <p>VIIRS and MODIS thermal anomalies flag a hotspot within minutes. That data is free — and almost nobody downstream reads it.</p>
+        </article>
+        <article class="card">
+          <p class="card-num mono">02</p>
+          <h3>Weather and terrain make it worse</h3>
+          <p>Dry fine fuel, wind, an upslope gradient. The same fire is a nuisance upwind and an emergency downwind.</p>
+        </article>
+        <article class="card">
+          <p class="card-num mono">03</p>
+          <h3>Nobody tells the household</h3>
+          <p>No SMS. No voice note. No LED on the wall. The last mile is the missing product, not the missing satellite.</p>
+        </article>
+      </div>
+    </section>
+
+    <!-- 3. PINNED SCROLL STORY -->
+    <section id="story" class="story">
+      <div class="story-progress"><span id="story-progress"></span></div>
+      <div class="story-stage" id="story-stage">
+        <p class="kicker mono">How it thinks</p>
+        <div class="beats">
+          <article class="beat" data-beat="1">
+            <p class="beat-index mono">01 / detect</p>
+            <h3>A pixel heats up</h3>
+            <p>FIRMS reports a thermal anomaly with a fire radiative power value. We drop low-confidence pixels and keep everything inside the 25 km watch ring.</p>
+            <div class="beat-visual grid-visual" aria-hidden="true">
+              <span></span><span></span><span></span><span class="hot"></span>
+              <span></span><span></span><span></span><span></span>
+              <span></span><span></span><span></span><span></span>
+            </div>
+          </article>
+          <article class="beat" data-beat="2">
+            <p class="beat-index mono">02 / condition</p>
+            <h3>Then the weather answers</h3>
+            <p>Wind speed and direction, humidity, vapour-pressure deficit, heating rate, slope and fuel class. Wind blowing upslope multiplies the spread estimate.</p>
+            <div class="beat-visual wind-visual" aria-hidden="true">
+              <i>→</i><i>→</i><i>→</i><i>→</i>
+            </div>
+          </article>
+          <article class="beat" data-beat="3">
+            <p class="beat-index mono">03 / decide</p>
+            <h3>27 fuzzy rules fire</h3>
+            <p>Mamdani inference, centroid defuzzification. Each rule reports its strength, so "why HIGH?" always has an answer.</p>
+            <div class="beat-visual rule-visual" aria-hidden="true">
+              <b>IF ffmc extreme AND wind strong → HIGH</b>
+              <b>IF fire near AND downwind → HIGH</b>
+              <b>IF ffmc low AND air humid → LOW</b>
+            </div>
+          </article>
+          <article class="beat" data-beat="4">
+            <p class="beat-index mono">04 / speak</p>
+            <h3>Plain language, not a dashboard</h3>
+            <p>A number an operator can audit, and a sentence a resident can act on — in the same cycle.</p>
+            <div class="beat-visual phone-visual" aria-hidden="true">
+              <div class="mini-phone"><span>GARUDA</span><b>HIGH fire risk: fire within 1.2 km, strong wind. Evacuate now.</b></div>
+            </div>
+          </article>
+          <article class="beat" data-beat="5">
+            <p class="beat-index mono">05 / deliver</p>
+            <h3>Four channels, one message</h3>
+            <p>Discord for the ops room, SMS for the feature phone, email for the record, an LED on the wall for the street.</p>
+            <div class="beat-visual rings-visual" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- 4. TRY IT -->
+    <section id="try" class="section">
+      <p class="kicker mono">Try it</p>
+      <h2 class="section-title">The engine, without the demo voice-over.</h2>
+
+      <div class="try-grid">
+        <!-- fuzzy playground -->
+        <article class="card try-card">
+          <header>
+            <h3>Fuzzy playground</h3>
+            <span class="mono tiny muted">same function as the engine</span>
+          </header>
+          <div class="gauge">
+            <div class="gauge-value"><span id="pf-score">—</span><small class="mono">/100</small></div>
+            <span class="badge low" id="pf-band">LOW</span>
+          </div>
+          <div class="meter"><span id="pf-bar"></span></div>
+
+          <div class="sliders">
+            <label>Temperature <output id="pf-temp-out" class="mono">34 °C</output>
+              <input type="range" id="pf-temp" min="15" max="48" step="0.5" value="34" /></label>
+            <label>Humidity <output id="pf-rh-out" class="mono">40 %</output>
+              <input type="range" id="pf-rh" min="5" max="100" step="1" value="40" /></label>
+            <label>Wind <output id="pf-wind-out" class="mono">22 km/h</output>
+              <input type="range" id="pf-wind" min="0" max="70" step="1" value="22" /></label>
+            <label>Heating rate <output id="pf-heat-out" class="mono">1.2 °C/h</output>
+              <input type="range" id="pf-heat" min="-2" max="5" step="0.1" value="1.2" /></label>
+            <label>Slope <output id="pf-slope-out" class="mono">6 %</output>
+              <input type="range" id="pf-slope" min="0" max="40" step="1" value="6" /></label>
+            <label>Fire distance <output id="pf-dist-out" class="mono">2.4 km</output>
+              <input type="range" id="pf-dist" min="0.3" max="25" step="0.1" value="2.4" /></label>
+          </div>
+
+          <canvas id="pf-curves" height="120" aria-label="Membership curves"></canvas>
+          <ul class="rules" id="pf-rules"></ul>
+        </article>
+
+        <!-- severity ladder -->
+        <article class="card try-card">
+          <header>
+            <h3>Severity ladder</h3>
+            <span class="mono tiny muted">message + Pi LED pattern</span>
+          </header>
+          <div class="ladder" role="group" aria-label="Severity">
+            <button class="ladder-btn low" data-band="LOW">LOW</button>
+            <button class="ladder-btn medium" data-band="MEDIUM">MEDIUM</button>
+            <button class="ladder-btn high" data-band="HIGH">HIGH</button>
+          </div>
+
+          <div class="led-row">
+            <div id="led" class="led low" aria-hidden="true"></div>
+            <div class="led-meta">
+              <span class="mono tiny muted">Pi LED pattern</span>
+              <b id="led-label" class="mono">1 slow blink</b>
+            </div>
+            <button class="btn ghost small" id="beep-btn">Play beeps</button>
+          </div>
+
+          <div class="voice-row">
+            <button class="btn ghost small" id="speak-btn">🔊 Speak alert</button>
+            <select id="speak-lang" class="lang-select mono" aria-label="Broadcast language">
+              <option value="en">English</option>
+              <option value="kn">ಕನ್ನಡ</option>
+              <option value="hi">हिन्दी</option>
+            </select>
+            <span class="mono tiny muted">text-to-speech broadcast</span>
+          </div>
+
+          <div class="mini-phone big" aria-live="polite">
+            <span class="mono">GARUDA</span>
+            <b id="ladder-msg">Low fire risk: conditions quiet. Keep windows closed and watch for updates.</b>
+          </div>
+        </article>
+
+        <!-- mini map -->
+        <article class="card try-card map-card">
+          <header>
+            <h3>Threat map</h3>
+            <span class="mono tiny muted" id="mini-badge">loading…</span>
+          </header>
+          <div id="cesium-mini" class="mini-map"></div>
+          <p class="hint mono tiny">click anywhere inside the ring to drop a fire · the wedge is downwind</p>
+        </article>
+      </div>
+    </section>
+
+    <!-- 5. UNDER THE HOOD -->
+    <section id="how" class="section">
+      <p class="kicker mono">Under the hood</p>
+      <h2 class="section-title">Two free APIs, one cycle, four channels.</h2>
+      <ol class="pipeline">
+        <li><span class="mono tiny">01</span><b>NASA FIRMS</b><em>thermal anomalies, 25 km ring</em></li>
+        <li><span class="mono tiny">02</span><b>Open-Meteo</b><em>wind, humidity, VPD, rain, air</em></li>
+        <li><span class="mono tiny">03</span><b>Terrain</b><em>slope and aspect, 3×3 grid</em></li>
+        <li><span class="mono tiny">04</span><b>Fuzzy engine</b><em>27 rules → risk 0–100</em></li>
+        <li><span class="mono tiny">05</span><b>Message</b><em>plain-language action</em></li>
+        <li><span class="mono tiny">06</span><b>Channels</b><em>Discord · SMS · email · LED</em></li>
+        <li><span class="mono tiny">07</span><b>Dashboard</b><em>audit trail and timeline</em></li>
+      </ol>
+      <p class="badge-cycle mono">every 15 minutes</p>
+    </section>
+
+    <!-- 6. NUMBERS -->
+    <section id="numbers" class="section">
+      <p class="kicker mono">Numbers</p>
+      <h2 class="section-title">What is measured, and what we do not claim.</h2>
+      <div class="numbers">
+        <div class="num"><b class="mono" data-count="15">0</b><span>minute cycle</span></div>
+        <div class="num"><b class="mono" data-count="4">0</b><span>delivery channels</span></div>
+        <div class="num"><b class="mono" data-count="0">0</b><span>rupees per alert</span></div>
+        <div class="num"><b class="mono" id="bt-sample">—</b><span>backtest days</span></div>
+      </div>
+      <div class="backtest" id="backtest">
+        <p class="mono tiny muted" id="bt-meta">reading /backtest…</p>
+        <dl class="bt-grid">
+          <div><dt>hit rate</dt><dd id="bt-hit">—</dd></div>
+          <div><dt>false alarms</dt><dd id="bt-fa">—</dd></div>
+          <div><dt>risk, fire days</dt><dd id="bt-fire">—</dd></div>
+          <div><dt>risk, quiet days</dt><dd id="bt-quiet">—</dd></div>
+        </dl>
+      </div>
+    </section>
+
+    <!-- 7. LIMITS -->
+    <section id="limits" class="section limits">
+      <p class="kicker mono">Honest limits</p>
+      <h2 class="section-title">What this does not do.</h2>
+      <ul>
+        <li><b>Live vs simulated.</b> Weather, terrain and air quality are live Open-Meteo data. NASA FIRMS needs a MAP_KEY; without it the map and detections are visibly badged SIMULATED.</li>
+        <li><b>FIRMS lags.</b> Satellite overpasses mean detection can arrive up to about three hours after ignition, and cloud cover hides fires.</li>
+        <li><b>Rules, not guarantees.</b> The fuzzy engine is expert heuristics. It ranks risk; it cannot promise a fire will or will not reach a street.</li>
+        <li><b>No oxygen prediction.</b> Outdoor O₂ stays near 20.9%. A sensor reading is context for responders, not a predictor, and never changes the score.</li>
+        <li><b>Background is illustrative.</b> The terrain, embers, satellite pass and heat map behind this page are decorative, generated from noise — not this geofence.</li>
+      </ul>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div>
+      <p><b>Garuda</b> · ಗರುಡ</p>
+      <p class="mono tiny muted">NOVA 2026 Dubai Grand Finale · Track D</p>
+    </div>
+    <div class="attrib mono tiny">
+      <p>Fire data: NASA FIRMS. Weather data by Open-Meteo.com (CC BY 4.0, non-commercial).</p>
+      <p>Map: OpenStreetMap contributors. Imagery: Cesium ion / OpenStreetMap. Background is illustrative.</p>
+      <p><a href="/dashboard">Dashboard</a> · <a href="#limits">Limits</a></p>
+    </div>
+  </footer>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/cesium/1.119.0/Cesium.js"></script>
+  <script src="bg.js" defer></script>
+  <script type="module" src="landing.js"></script>
+</body>
+</html>

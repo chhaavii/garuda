@@ -1,0 +1,179 @@
+/* dashboard-specific additions on top of style.css */
+body.dash { background: #080d0b; }
+
+/* the background layers need their own fixed positioning here because the
+   dashboard does not load landing.css */
+body.dash .bg {
+  position: fixed; inset: 0; z-index: 0; overflow: hidden;
+  pointer-events: none; opacity: 0.15;
+}
+body.dash .bg canvas {
+  position: absolute; inset: 0; width: 100%; height: 100%; display: block;
+}
+body.dash .bg-grain {
+  position: absolute; inset: 0;
+  background-image: radial-gradient(rgba(243, 239, 230, 0.35) 0.5px, transparent 0.6px);
+  background-size: 3px 3px; opacity: 0.04;
+}
+body.dash .topbar, body.dash .wrap, body.dash .foot { position: relative; z-index: 1; }
+body.dash.alert-flash .topbar { box-shadow: inset 0 -2px 0 var(--high); }
+body.dash.alert-flash .map-card { box-shadow: 0 0 0 1px rgba(255, 68, 56, 0.7), 0 0 40px -10px rgba(255, 68, 56, 0.6); }
+body.dash .bg-heat { display: none; }
+body.dash[data-sev="MEDIUM"] .bg { filter: sepia(0.32) saturate(1.15); }
+body.dash[data-sev="HIGH"] .bg { filter: sepia(0.5) hue-rotate(-18deg) saturate(1.35); }
+
+.main-grid { grid-template-columns: minmax(0, 1.7fr) minmax(320px, 1fr); }
+.map-card { min-height: 520px; }
+.cesium-box {
+  height: 440px; border-radius: 12px; overflow: hidden;
+  border: 1px solid var(--line); background: #0d1512;
+}
+.cesium-box .cesium-viewer-bottom, .cesium-box .cesium-widget-credits { font-size: 9px; color: #7f8c85; background: rgba(8,13,11,0.7); }
+.map-tools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.map-search {
+  width: 150px; padding: 7px 10px; font-size: 0.7rem;
+  background: rgba(255,255,255,0.04); border: 1px solid var(--line);
+  border-radius: 8px; color: var(--ink);
+}
+.map-search::placeholder { color: #6f7d76; }
+.map-foot { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 10px; color: var(--muted); }
+.map-foot .attrib-note { margin-left: auto; opacity: 0.75; }
+.btn.small { padding: 6px 10px; font-size: 0.72rem; }
+.top-link { color: var(--muted); text-decoration: none; }
+.top-link:hover { color: var(--ember-2); }
+
+.risk-number {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 1.9rem; letter-spacing: -0.02em; margin-left: 4px;
+}
+.source-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.source-badge {
+  font-family: "JetBrains Mono", monospace; font-size: 0.6rem; letter-spacing: 0.08em;
+  padding: 3px 7px; border-radius: 999px; border: 1px solid var(--line);
+  color: var(--muted); text-transform: uppercase;
+}
+.source-badge.live { color: #b6f2d3; border-color: rgba(61,220,151,0.4); background: rgba(61,220,151,0.1); }
+.source-badge.stale { color: #ffd2ae; border-color: rgba(255,154,60,0.4); background: rgba(255,154,60,0.1); }
+.source-badge.simulated { color: #ffc9c4; border-color: rgba(255,68,56,0.45); background: rgba(255,68,56,0.12); }
+.source-badge.unavailable { color: #8f9a94; border-style: dashed; }
+
+#timeline { width: 100%; height: 96px; display: block; }
+.timeline-note { fill: #6f7d76; }
+
+.bt-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 10px; }
+.bt-grid div { padding: 10px 12px; border-radius: 10px; background: rgba(255,255,255,0.03); border: 1px solid var(--line); }
+.bt-grid dt { font-size: 0.62rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
+.bt-grid dd { margin: 2px 0 0; font-family: "JetBrains Mono", monospace; font-size: 1rem; }
+.bt-grid .wide { grid-column: 1 / -1; }
+
+#override-note { color: #ffc9c4; }
+.rules li { font-family: "JetBrains Mono", monospace; }
+.bars { height: 54px; margin-top: 12px; }
+.bars .bar { flex: 1 1 0; max-width: 14px; }
+body.dash .driver {
+  font-size: 0.68rem; padding: 5px 9px; border-radius: 999px; color: #ffd2ae;
+  background: rgba(255, 107, 43, 0.12); border: 1px solid rgba(255, 107, 43, 0.3);
+}
+body.dash .driver.guard {
+  color: #ffc9c4; background: rgba(255, 68, 56, 0.14); border-color: rgba(255, 68, 56, 0.4);
+}
+
+@media (max-width: 1080px) {
+  .main-grid { grid-template-columns: 1fr; }
+  .cesium-box { height: 340px; }
+}
+
+/* ------------------------------------- personal impact / reports / voice --- */
+.impact {
+  margin: 8px 0 4px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: #ffb27a;
+}
+.steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 12px;
+  padding: 0;
+  list-style: none;
+}
+.steps li {
+  padding: 3px 9px;
+  font-size: 10.5px;
+  color: #cfd8d2;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+}
+.lang-select {
+  height: 36px;
+  padding: 0 8px;
+  font-size: 11px;
+  color: #f3efe6;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+}
+.report-actions,
+.checkin-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0;
+}
+.checkin-row input {
+  flex: 1 1 130px;
+  min-width: 110px;
+}
+.reports {
+  display: grid;
+  gap: 6px;
+  max-height: 232px;
+  margin: 8px 0 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+.report-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 8px;
+  font-size: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+}
+.report-icon { font-size: 14px; }
+.report-body { display: flex; flex: 1; flex-direction: column; gap: 2px; }
+.report-meta { font-size: 10px; color: #8b9a92; }
+.report-votes { display: flex; gap: 4px; }
+.routine {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.routine-row {
+  display: grid;
+  gap: 2px;
+  padding: 6px 10px;
+  border-left: 3px solid #3a4a42;
+}
+.routine-row.disrupted { border-color: #ff4438; }
+.routine-row.watch { border-color: #ff9a3c; }
+.routine-row.clear { border-color: #7fbf8a; }
+.routine-name { font-size: 12px; }
+.routine-value { font-size: 11px; color: #cfd8d2; }
+.routine-advice { font-size: 10px; color: #8b9a92; }
+.voice-script {
+  max-height: 150px;
+  margin: 6px 0;
+  padding: 10px;
+  overflow: auto;
+  font-size: 11px;
+  line-height: 1.55;
+  color: #cfd8d2;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+}
