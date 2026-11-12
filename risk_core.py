@@ -8,6 +8,7 @@ parity_test.py compares this file against the JavaScript module.
 
 import json
 import math
+import re
 import time
 
 DEFAULT_CONFIG = {
@@ -443,6 +444,322 @@ def terrain_features(grid):
         "aspect_deg": None if aspect is None else r1(aspect),
         "available": True,
     }
+
+
+# ------------------------------------------------------- impact & speech --
+COMPASS = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
+
+
+def compass(deg):
+    d = ((deg if deg is not None else 0) % 360 + 360) % 360
+    return COMPASS[int(math.floor(d / 22.5 + 0.5)) % 16]
+
+
+def impact(features, fires, assessment=None, config=None):
+    """Street-level reading of the same numbers the score is built from.
+
+    Which side the fire sits on, whether the wind carries it here, and how long
+    until it reaches the ring. Mirrors impact() in risk-core.js.
+    """
+    assessment = assessment or {}
+    config = config or DEFAULT_CONFIG
+    nearest = fires[0] if fires else None
+    if not nearest:
+        return {
+            "available": False,
+            "text": "no detection inside the watch ring",
+            "distance_km": None,
+            "eta_minutes": None,
+            "relation": None,
+        }
+    dist = nearest.get("distance_km")
+    if dist is None:
+        dist = haversine_km(
+            config["centre"]["lat"], config["centre"]["lng"], nearest["lat"], nearest["lng"]
+        )
+    bearing = bearing_deg(
+        config["centre"]["lat"], config["centre"]["lng"], nearest["lat"], nearest["lng"]
+    )
+    wind_from = features.get("wind_dir_deg")
+    relation = "nearby"
+    if wind_from is not None:
+        if angle_diff(bearing, wind_from) <= 55:
+            relation = "upwind"
+        elif angle_diff(bearing, (wind_from + 180) % 360) <= 55:
+            relation = "downwind"
+        else:
+            relation = "crosswind"
+    spread = max(assessment.get("spread_estimate_kmh") or 0, 0.2)
+    # A fire the wind is carrying away gets no arrival estimate - inventing one
+    # would be the exact dishonesty this project exists to avoid.
+    moving_away = relation == "downwind"
+    geofence = config["geofence_km"]
+    if dist <= geofence:
+        boundary = 0
+    elif moving_away:
+        boundary = None
+    else:
+        boundary = int(math.floor(((dist - geofence) / spread) * 60 + 0.5))
+    direction = compass(bearing)
+    if moving_away and boundary != 0:
+        text = (
+            f"Fire {r1(dist)} km downwind, {direction} side - "
+            "the wind is carrying it away, no arrival estimate"
+        )
+    elif boundary is not None and boundary <= 0:
+        text = f"Fire {r1(dist)} km {relation}, {direction} side - already inside your {geofence} km ring"
+    else:
+        text = (
+            f"Fire {r1(dist)} km {relation}, {direction} side - est. {boundary} min to your "
+            f"{geofence} km ring at {r1(spread)} km/h"
+        )
+    return {
+        "available": True,
+        "distance_km": r1(dist),
+        "bearing_deg": r1(bearing),
+        "compass": direction,
+        "relation": relation,
+        "eta_minutes": boundary,
+        "eta_to_you_minutes": None if moving_away else int(math.floor((dist / spread) * 60 + 0.5)),
+        "spread_kmh": r1(spread),
+        "text": text,
+        "source": nearest.get("satellite"),
+        "detected_at": nearest.get("acq_datetime"),
+        "unverified": True,
+    }
+
+
+def _moving_en(rel):
+    if rel == "upwind":
+        return "The wind is carrying it toward you."
+    if rel == "downwind":
+        return "The wind is carrying it away from you."
+    if rel == "crosswind":
+        return "The wind is crossing its path."
+    return ""
+
+
+ALERT_COPY = {
+    "en": {
+        "code": "en",
+        "bcp47": "en-IN",
+        "name": "English",
+        "ident": "Garuda community fire warning.",
+        "moving": lambda c: _moving_en(c["relation"]),
+        "HIGH": lambda c: (
+            f"High fire risk, {c['score']} out of 100. {c['impact']}. {c['moving']} "
+            "Leave now if you are in its path, close windows, switch off the gas and the air "
+            "conditioner, take ID, medicines and water, and follow local authority instructions."
+        ),
+        "MEDIUM": lambda c: (
+            f"Medium fire risk, {c['score']} out of 100. {c['impact']}. "
+            "Pack an evacuation bag, charge your phone, keep children and the elderly indoors, "
+            "and watch for the next update."
+        ),
+        "LOW": lambda c: (
+            f"Low fire risk, {c['score']} out of 100. Conditions are quiet. "
+            "Keep windows closed on smoky days and watch for updates."
+        ),
+        "steps": {
+            "HIGH": [
+                "Leave now if you are in its path",
+                "Windows shut, gas and AC off",
+                "Take ID, medicines, water, phone",
+                "Follow authority instructions",
+            ],
+            "MEDIUM": [
+                "Pack a bag and charge devices",
+                "Keep children and the elderly indoors",
+                "Note two exit routes",
+                "Watch the next 15-minute cycle",
+            ],
+            "LOW": [
+                "No action needed right now",
+                "Keep windows closed on smoky days",
+                "Report smoke from the community card",
+            ],
+        },
+    },
+    "kn": {
+        "code": "kn",
+        "bcp47": "kn-IN",
+        "name": "ಕನ್ನಡ",
+        "ident": "ಗರುಡ ಸಮುದಾಯ ಅಗ್ನಿ ಎಚ್ಚರಿಕೆ.",
+        "moving": lambda c: "",
+        "HIGH": lambda c: (
+            f"ಹೆಚ್ಚಿನ ಅಗ್ನಿ ಅಪಾಯ, 100ಕ್ಕೆ {c['score']}. {c['impact']} "
+            "ತಕ್ಷಣ ಸುರಕ್ಷಿತ ಸ್ಥಳಕ್ಕೆ ತೆರಳಿ, ಕಿಟಕಿ ಬಾಗಿಲು ಮುಚ್ಚಿ, ಗ್ಯಾಸ್ ಮತ್ತು ಎಸಿ ಆಫ್ ಮಾಡಿ, "
+            "ದಾಖಲೆ, ಔಷಧಿ ಮತ್ತು ನೀರು ತೆಗೆದುಕೊಂಡು ಹೋಗಿ, ಸ್ಥಳೀಯ ಅಧಿಕಾರಿಗಳ ಸೂಚನೆ ಪಾಲಿಸಿ."
+        ),
+        "MEDIUM": lambda c: (
+            f"ಮಧ್ಯಮ ಅಗ್ನಿ ಅಪಾಯ, 100ಕ್ಕೆ {c['score']}. {c['impact']} "
+            "ತುರ್ತು ಚೀಲ ಸಿದ್ಧಪಡಿಸಿ, ಫೋನ್ ಚಾರ್ಜ್ ಮಾಡಿ, ಮಕ್ಕಳು ಮತ್ತು ವೃದ್ಧರನ್ನು ಒಳಗೆ ಇರಿಸಿ, "
+            "ಮುಂದಿನ ಮಾಹಿತಿಗೆ ಕಾಯಿರಿ."
+        ),
+        "LOW": lambda c: (
+            f"ಕಡಿಮೆ ಅಗ್ನಿ ಅಪಾಯ, 100ಕ್ಕೆ {c['score']}. ಪರಿಸ್ಥಿತಿ ಶಾಂತವಾಗಿದೆ. "
+            "ಹೊಗೆ ಇರುವ ದಿನ ಕಿಟಕಿ ಮುಚ್ಚಿ, ಮುಂದಿನ ಮಾಹಿತಿಗೆ ಕಾಯಿರಿ."
+        ),
+        "steps": {
+            "HIGH": ["ತಕ್ಷಣ ಸ್ಥಳ ತೊರೆಯಿರಿ", "ಕಿಟಕಿ/ಗ್ಯಾಸ್/ಎಸಿ ಆಫ್", "ದಾಖಲೆ, ಔಷಧಿ, ನೀರು, ಫೋನ್", "ಅಧಿಕಾರಿಗಳ ಸೂಚನೆ ಪಾಲಿಸಿ"],
+            "MEDIUM": ["ತುರ್ತು ಚೀಲ ಸಿದ್ಧ", "ಮಕ್ಕಳು, ವೃದ್ಧರು ಒಳಗೆ", "ಎರಡು ನಿರ್ಗಮನ ಮಾರ್ಗ ಗುರುತಿಸಿ", "ಮುಂದಿನ 15 ನಿಮಿಷದ ಮಾಹಿತಿ"],
+            "LOW": ["ಈಗ ಏನೂ ಮಾಡಬೇಕಿಲ್ಲ", "ಹೊಗೆಯ ದಿನ ಕಿಟಕಿ ಮುಚ್ಚಿ", "ಹೊಗೆ ಕಂಡರೆ ವರದಿ ಮಾಡಿ"],
+        },
+    },
+    "hi": {
+        "code": "hi",
+        "bcp47": "hi-IN",
+        "name": "हिन्दी",
+        "ident": "गरुड़ सामुदायिक अग्नि चेतावनी।",
+        "moving": lambda c: "",
+        "HIGH": lambda c: (
+            f"अग्नि का गंभीर खतरा, 100 में से {c['score']}. {c['impact']} "
+            "तुरंत सुरक्षित स्थान पर जाएँ, खिड़कियाँ बंद करें, गैस और एसी बंद करें, दस्तावेज़, दवा और "
+            "पानी साथ लें, स्थानीय प्रशासन के निर्देश मानें."
+        ),
+        "MEDIUM": lambda c: (
+            f"अग्नि का मध्यम खतरा, 100 में से {c['score']}. {c['impact']} "
+            "आपातकालीन बैग तैयार रखें, फ़ोन चार्ज करें, बच्चों और बुज़ुर्गों को घर के अंदर रखें, "
+            "अगली सूचना की प्रतीक्षा करें."
+        ),
+        "LOW": lambda c: (
+            f"अग्नि का खतरा कम है, 100 में से {c['score']}. स्थिति शांत है. "
+            "धुएँ वाले दिन खिड़कियाँ बंद रखें और अपडेट की प्रतीक्षा करें."
+        ),
+        "steps": {
+            "HIGH": ["तुरंत सुरक्षित स्थान पर जाएँ", "खिड़की, गैस, एसी बंद", "दस्तावेज़, दवा, पानी, फ़ोन", "प्रशासन के निर्देश मानें"],
+            "MEDIUM": ["आपातकालीन बैग तैयार", "बच्चे और बुज़ुर्ग अंदर", "दो निकास मार्ग तय करें", "अगले 15 मिनट के अपडेट"],
+            "LOW": ["अभी कोई कार्रवाई नहीं", "धुएँ वाले दिन खिड़की बंद", "धुआँ दिखे तो रिपोर्ट करें"],
+        },
+    },
+}
+
+
+def _local_impact_kn(c):
+    if c["dist"] is None:
+        return ""
+    if c["eta"] is None:
+        return f"ಬೆಂಕಿ {c['dist']} ಕಿ.ಮೀ ದೂರದಲ್ಲಿದೆ."
+    if c["eta"] <= 0:
+        return f"ಬೆಂಕಿ {c['dist']} ಕಿ.ಮೀ ದೂರದಲ್ಲಿದೆ, ಈಗಾಗಲೇ ನಿಮ್ಮ ವಲಯದ ಒಳಗೆ."
+    return f"ಬೆಂಕಿ {c['dist']} ಕಿ.ಮೀ ದೂರದಲ್ಲಿದೆ, ಸುಮಾರು {c['eta']} ನಿಮಿಷದಲ್ಲಿ ನಿಮ್ಮ ಪ್ರದೇಶ ತಲುಪಬಹುದು."
+
+
+def _local_impact_hi(c):
+    if c["dist"] is None:
+        return ""
+    if c["eta"] is None:
+        return f"आग {c['dist']} किमी दूर है."
+    if c["eta"] <= 0:
+        return f"आग {c['dist']} किमी दूर है और आपके दायरे के अंदर है."
+    return f"आग {c['dist']} किमी दूर है और लगभग {c['eta']} मिनट में आपके क्षेत्र तक पहुँच सकती है."
+
+
+LOCAL_IMPACT = {"kn": _local_impact_kn, "hi": _local_impact_hi}
+
+VOICE_LANGS = [
+    {"code": copy["code"], "bcp47": copy["bcp47"], "name": copy["name"]}
+    for copy in ALERT_COPY.values()
+]
+
+
+def alert_text(lang="en", severity="LOW", score=0, impact_data=None):
+    """The text read aloud by speech synthesis or an outbound call.
+
+    Hand-written Kannada and Hindi, not machine translation. Mirrors alertText()
+    in risk-core.js.
+    """
+    copy = ALERT_COPY.get(lang) or ALERT_COPY["en"]
+    sev = severity if severity in ("HIGH", "MEDIUM", "LOW") else "LOW"
+    ctx = {
+        "score": int(math.floor((score or 0) + 0.5)),
+        "dist": (impact_data or {}).get("distance_km"),
+        "eta": (impact_data or {}).get("eta_minutes"),
+        "relation": (impact_data or {}).get("relation"),
+        "impact": (impact_data or {}).get("text") or "",
+    }
+    ctx["moving"] = copy["moving"](ctx)
+    if copy["code"] in LOCAL_IMPACT:
+        ctx["impact"] = LOCAL_IMPACT[copy["code"]](ctx)
+    body = re.sub(r"\s+", " ", copy[sev](ctx)).strip()
+    body = re.sub(r"\.(\s*\.)+", ".", body).strip()
+    return {
+        "lang": copy["code"],
+        "bcp47": copy["bcp47"],
+        "name": copy["name"],
+        "label": "text-to-speech broadcast",
+        "text": body,
+        "ident": copy["ident"],
+        "voice_script": f"{copy['ident']} {body}".strip(),
+        "steps": copy["steps"][sev],
+    }
+
+
+# ------------------------------------------------------ routine windows ----
+ROUTINE = [
+    {"key": "commute", "label": "Morning commute", "from": 7, "to": 10},
+    {"key": "school", "label": "School pickup", "from": 14, "to": 17},
+    {"key": "return", "label": "Evening return", "from": 17, "to": 20},
+]
+
+
+def routine_windows(timeline=None):
+    """Commute and routine windows read off the 12-hour forecast timeline."""
+    timeline = timeline or []
+
+    def hour_of(value):
+        text = str(value or "")[11:13]
+        return int(text) if text.isdigit() else None
+
+    rows = []
+    for window in ROUTINE:
+        points = [
+            point
+            for point in timeline
+            if hour_of(point.get("time")) is not None
+            and window["from"] <= hour_of(point.get("time")) < window["to"]
+        ]
+        if not points:
+            rows.append(
+                {
+                    "key": window["key"],
+                    "label": window["label"],
+                    "available": False,
+                    "status": "beyond horizon",
+                    "peak": None,
+                    "band": None,
+                    "peak_at": None,
+                    "advice": f"Outside the {len(timeline)} h forecast",
+                }
+            )
+            continue
+        peak = max(points, key=lambda point: point["score"])
+        at = str(peak.get("time") or "")[11:16]
+        if peak["band"] == "HIGH":
+            status = "disrupted"
+            advice = (
+                f"Disrupted - risk reaches HIGH ({peak['score']}/100) by {at}. "
+                "Move this window or take an alternate route."
+            )
+        elif peak["band"] == "MEDIUM":
+            status = "watch"
+            advice = f"Travel possible - risk peaks at {peak['score']}/100 by {at}."
+        else:
+            status = "clear"
+            advice = f"Clear - risk stays at {peak['score']}/100."
+        rows.append(
+            {
+                "key": window["key"],
+                "label": window["label"],
+                "available": True,
+                "status": status,
+                "peak": peak["score"],
+                "band": peak["band"],
+                "peak_at": at,
+                "advice": advice,
+            }
+        )
+    return rows
 
 
 if __name__ == "__main__":

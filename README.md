@@ -116,7 +116,8 @@ an offline queue and a copy/relay payload — **not** a radio mesh, and the READ
 - **Heating rate** dT/dt over the previous 3 hours, in °C/h.
 - **Canadian FWI system** — FFMC, DMC, DC, ISI, BUI, FWI, spun up over the 14 past days. This is a
   standard index calibrated on Canadian fuel types; we say so rather than implying it was tuned
-  for Karnataka fuels.
+  for Karnataka fuels. The codes are spun up over 16 days (14 days of history plus today), because
+  FFMC/DMC/DC are recursive and yesterday's value feeds today's.
 - **Terrain** — elevation on a 3×3 grid about 1 km apart, giving slope % and aspect. Wind blowing
   upslope raises the spread estimate.
 - **Fuel class** — `urban | grass | scrub | forest` in `config.json`, a user-set multiplier.
@@ -154,8 +155,10 @@ python3 serve.py 3001  # single origin: / landing, /dashboard dashboard
 ```
 
 `serve.py` serves `deploy/public` (the exact files the Worker hosts), proxies `/status`, `/history`,
-`/simulate`, `/fires.geojson` and `/weather.json` to the engine, and answers `/config.json` and
-`/backtest` itself so the UI works even with the engine stopped.
+`/simulate`, `/fires.geojson`, `/weather.json`, `/reports`, `/checkin` and `/voice` to the engine, and
+answers `/config.json` and `/backtest` itself so the UI works even with the engine stopped.
+Reports and check-ins are rows in D1 when hosted; locally `engine.py` keeps the same shapes in memory,
+so every dashboard panel works on the laptop with no Cloudflare account.
 
 ## Backtest
 
@@ -180,7 +183,7 @@ indicators.
 ## Run locally
 
 ```bash
-pip install flask requests numpy
+pip install flask requests
 python3 engine.py            # http://localhost:5000  (/status /history /simulate)
 python3 parity_test.py       # Python vs JS engine parity
 python3 backtest.py          # needs FIRMS_MAP_KEY

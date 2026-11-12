@@ -17,6 +17,7 @@ import io
 import json
 import os
 import time
+import uuid
 
 import requests
 from flask import Flask, jsonify, request
@@ -35,6 +36,9 @@ SMS_SENDER = os.environ.get("INFOBIP_SENDER") or SECRETS.get("infobip_sender", "
 SMS_RECIPIENT = os.environ.get("ALERT_SMS_TO") or SECRETS.get("alert_sms_to", "")
 SENDGRID_API_KEY = os.environ.get("SENDGRID_API_KEY") or SECRETS.get("sendgrid_api_key", "")
 SENDGRID_TO = os.environ.get("ALERT_EMAIL_TO") or SECRETS.get("alert_email_to", "")
+VOICE_API_KEY = os.environ.get("INFOBIP_API_KEY") or SECRETS.get("infobip_api_key", "")
+VOICE_TO = os.environ.get("INFOBIP_VOICE_TO") or SECRETS.get("infobip_voice_to", "")
+VOICE_FROM = os.environ.get("INFOBIP_VOICE_FROM") or SECRETS.get("infobip_voice_from", "Garuda")
 
 CENTRE = CFG["centre"]
 CACHE_MS = 15 * 60
@@ -44,6 +48,13 @@ app = Flask(__name__)
 cache = {"at": 0, "weather": None, "daily": None, "terrain": None, "air": None, "fires": None, "notes": [], "firms": "simulated"}
 history = []
 last_watch_at = 0
+
+# Community ground truth. The hosted Worker keeps this in D1; the local engine
+# keeps the same shapes in memory so the dashboard's panels work offline.
+reports = []
+checkins = []
+REPORT_WINDOW_S = 3 * 3600
+CHECKIN_WINDOW_S = 12 * 3600
 
 
 # ------------------------------------------------------------- adapters --
@@ -255,7 +266,16 @@ def build_status(force_high=False):
         "co": data["air"]["co"] if data["air"] else None,
     }
 
-    result = risk_core.assess(features)
+    now = time.time()
+    near_reports = [
+        report
+        for report in reports
+        if now - report["created_at"] <= REPORT_WINDOW_S
+        and report["distance_km"] <= CFG["geofence_km"]
+    ]
+    features["reports_near"] = len(near_reports)
+
+    result = risk_core.assess(features, CFG)
     timeline = []
     for offset in range(CFG["forecast_hours"]):
         i = min(idx + offset, len(rows) - 1)
@@ -268,13 +288,22 @@ def build_status(force_high=False):
             "rh": round(row["rh"], 1),
             "heating_rate_c_h": round((row["temp"] - past["temp"]) / 3, 2),
         }
-        scored = risk_core.assess(merged)
+        scored = risk_core.assess(merged, CFG)
         timeline.append(
             {"time": row["time"], "score": scored["score"], "band": scored["band"], "wind_kmh": merged["wind_kmh"], "rh": merged["rh"]}
         )
 
     tth = next(({"hours": i, "at": p["time"]} for i, p in enumerate(timeline) if p["band"] == "HIGH"), None)
     severity = "HIGH" if force_high else result["band"]
+
+    impact_data = risk_core.impact(features, fires, result, CFG)
+    alert_copies = {
+        code: risk_core.alert_text(
+            code, severity=severity, score=result["score"], impact_data=impact_data
+        )
+        for code in ("en", "kn", "hi")
+    }
+    routine = risk_core.routine_windows(timeline)
 
     global last_watch_at
     watch = None
@@ -292,7 +321,15 @@ def build_status(force_high=False):
         "cycle": {"index": int(time.time() // 900), "minutes": 15, "seconds_remaining": 900 - int(time.time()) % 900},
         "severity": severity,
         "risk_score": result["score"],
-        "message": message_for(severity, result["reasons"]),
+        "message": alert_copies["en"]["text"],
+        "impact": impact_data,
+        "alert_text": alert_copies,
+        "routine": routine,
+        "community_reports": [
+            {**report, "ago_minutes": int((now - report["created_at"]) // 60)}
+            for report in sorted(reports, key=lambda r: r["created_at"], reverse=True)[:50]
+            if now - report["created_at"] <= REPORT_WINDOW_S
+        ],
         "reasons": result["reasons"],
         "fired_rules": result["fired_rules"],
         "override": result["override"],
@@ -328,15 +365,6 @@ def build_status(force_high=False):
     history.append({"timestamp": status["timestamp"], "severity": severity, "risk_score": status["risk_score"]})
     del history[:-96]
     return status
-
-
-def message_for(band, reasons):
-    text = ", ".join(reasons[:3]) or "conditions present"
-    if band == "HIGH":
-        return f"HIGH fire risk: {text}. Evacuate the area, seek a cooling centre, follow local authority orders."
-    if band == "MEDIUM":
-        return f"Medium fire risk: {text}. Prepare an evacuation kit and charge devices."
-    return "Low fire risk: conditions quiet. Keep windows closed and watch for updates."
 
 
 # -------------------------------------------------------------- channels --
@@ -448,6 +476,205 @@ def weather_route():
             "updated": time.strftime("%Y-%m-%d %H:%M:%S"),
             "badge": data["firms"],
         }
+    )
+
+
+# ------------------------------------------- community, check-in, voice --
+@app.route("/reports", methods=["GET"])
+def reports_route():
+    now = time.time()
+    live = sorted(
+        [r for r in reports if now - r["created_at"] <= REPORT_WINDOW_S],
+        key=lambda r: r["created_at"],
+        reverse=True,
+    )[:200]
+    payload = [
+        {
+            "id": r["id"],
+            "lat": r["lat"],
+            "lng": r["lng"],
+            "kind": r["kind"],
+            "note": r["note"],
+            "name": r["name"],
+            "created_at": r["created_at"],
+            "ago_minutes": int((now - r["created_at"]) // 60),
+            "confirms": r["confirms"],
+            "denies": r["denies"],
+            "distance_km": r["distance_km"],
+            "unverified": True,
+        }
+        for r in live
+    ]
+    return jsonify(
+        {
+            "reports": payload,
+            "count_near": len([r for r in payload if r["distance_km"] <= CFG["geofence_km"]]),
+            "window_hours": 3,
+            "source": "community reports (unverified)",
+        }
+    )
+
+
+@app.route("/reports", methods=["POST"])
+def report_create():
+    body = request.get_json(silent=True) or {}
+    try:
+        lat = float(body.get("lat"))
+        lng = float(body.get("lng"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "lat,lng required"}), 400
+    distance = risk_core.haversine_km(CENTRE["lat"], CENTRE["lng"], lat, lng)
+    if distance > CFG["watch_km"] * 2:
+        return jsonify({"error": f"outside the {CFG['watch_km']} km watch ring"}), 400
+    kind = body.get("kind") if body.get("kind") in ("smoke", "fire", "embers", "clear") else "smoke"
+    report = {
+        "id": str(uuid.uuid4()),
+        "lat": lat,
+        "lng": lng,
+        "kind": kind,
+        "note": str(body.get("note") or "")[:160],
+        "name": str(body.get("name") or "")[:40],
+        "created_at": time.time(),
+        "confirms": 0,
+        "denies": 0,
+        "distance_km": round(distance, 2),
+    }
+    reports.append(report)
+    del reports[:-200]
+    return (
+        jsonify(
+            {
+                "ok": True,
+                "id": report["id"],
+                "kind": kind,
+                "distance_km": round(distance, 2),
+                "unverified": True,
+                "window_hours": 3,
+            }
+        ),
+        201,
+    )
+
+
+@app.route("/reports/<report_id>/<vote>", methods=["POST"])
+def report_vote(report_id, vote):
+    if vote not in ("confirm", "deny"):
+        return jsonify({"error": "unsupported report request"}), 405
+    for report in reports:
+        if report["id"] == report_id:
+            report["confirms" if vote == "confirm" else "denies"] += 1
+            return jsonify({"ok": True, "id": report_id, "vote": vote})
+    return jsonify({"error": "unknown report", "id": report_id}), 404
+
+
+@app.route("/checkin", methods=["GET"])
+def checkin_route():
+    now = time.time()
+    live = [c for c in checkins if now - c["created_at"] <= CHECKIN_WINDOW_S]
+    payload = [
+        {
+            "id": c["id"],
+            "name": c["name"],
+            "status": c["status"],
+            "note": c["note"],
+            "ago_minutes": int((now - c["created_at"]) // 60),
+        }
+        for c in sorted(live, key=lambda c: c["created_at"], reverse=True)[:40]
+    ]
+    return jsonify(
+        {
+            "checkins": payload,
+            "safe": len([c for c in payload if c["status"] == "safe"]),
+            "help": len([c for c in payload if c["status"] == "help"]),
+            "window_hours": 12,
+        }
+    )
+
+
+@app.route("/checkin", methods=["POST"])
+def checkin_create():
+    body = request.get_json(silent=True) or {}
+    name = str(body.get("name") or "").strip()[:40]
+    if not name:
+        return jsonify({"error": "name required"}), 400
+    entry = {
+        "id": str(uuid.uuid4()),
+        "name": name,
+        "status": "help" if body.get("status") == "help" else "safe",
+        "note": str(body.get("note") or "")[:120],
+        "created_at": time.time(),
+    }
+    checkins.append(entry)
+    del checkins[:-200]
+    return jsonify({"ok": True, "id": entry["id"], "name": entry["name"], "status": entry["status"]}), 201
+
+
+@app.route("/voice", methods=["GET", "POST"])
+def voice_route():
+    lang = (request.args.get("lang") or "en").lower()
+    status = build_status(force_high=request.args.get("simulate") == "high")
+    copy = risk_core.alert_text(
+        lang,
+        severity=status["severity"],
+        score=status["risk_score"],
+        impact_data=status["impact"],
+    )
+    configured = bool(VOICE_API_KEY and VOICE_TO)
+    if not configured or request.method != "POST":
+        return jsonify(
+            {
+                "mode": "configured" if configured else "simulated",
+                "language": copy["bcp47"],
+                "text": copy["text"],
+                "script": copy["voice_script"],
+                "steps": copy["steps"],
+                "label": copy["label"],
+                "reason": (
+                    "POST to place the call"
+                    if configured
+                    else "INFOBIP_API_KEY and INFOBIP_VOICE_TO not set - script generated, no call placed"
+                ),
+            }
+        )
+
+    voice_lang = copy["bcp47"].split("-")[0]
+    try:
+        resp = requests.post(
+            "https://api.infobip.com/voice/1/calls",
+            headers={"Authorization": f"App {VOICE_API_KEY}", "Content-Type": "application/json"},
+            json={
+                "destinations": [{"to": VOICE_TO}],
+                "from": VOICE_FROM or "Garuda",
+                "language": voice_lang,
+                "ncco": [{"action": "say", "text": copy["voice_script"], "language": voice_lang}],
+            },
+            timeout=12,
+        )
+    except Exception as exc:  # noqa: BLE001 - reported as a failed call
+        return (
+            jsonify(
+                {
+                    "mode": "failed",
+                    "language": copy["bcp47"],
+                    "text": copy["text"],
+                    "script": copy["voice_script"],
+                    "detail": str(exc),
+                }
+            ),
+            502,
+        )
+    return (
+        jsonify(
+            {
+                "mode": "live" if resp.ok else "failed",
+                "language": copy["bcp47"],
+                "text": copy["text"],
+                "script": copy["voice_script"],
+                "upstream_status": resp.status_code,
+                "detail": resp.text[:300],
+            }
+        ),
+        200 if resp.ok else 502,
     )
 
 

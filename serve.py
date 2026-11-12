@@ -23,7 +23,16 @@ ENGINE = "http://127.0.0.1:5000"
 
 # Routes the Flask engine owns. /config.json and /backtest are served here so the
 # preview works even when the engine is not running.
-PROXY_PATHS = ("/status", "/history", "/simulate", "/fires.geojson", "/weather.json")
+PROXY_PATHS = (
+    "/status",
+    "/history",
+    "/simulate",
+    "/fires.geojson",
+    "/weather.json",
+    "/reports",
+    "/checkin",
+    "/voice",
+)
 PAGE_ALIASES = {"/dashboard": "/dashboard.html", "/dashboard/": "/dashboard.html"}
 
 
@@ -47,12 +56,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def _path(self):
         return self.path.split("?")[0]
 
+    def _is_proxy(self):
+        path = self._path()
+        return any(path == prefix or path.startswith(prefix + "/") for prefix in PROXY_PATHS)
+
     def _proxy(self, method):
         data = None
         if method == "POST":
             length = int(self.headers.get("Content-Length") or 0)
             data = self.rfile.read(length) if length else b""
-        req = urllib.request.Request(ENGINE + self.path, data=data, method=method)
+        headers = {}
+        if self.headers.get("Content-Type"):
+            headers["Content-Type"] = self.headers["Content-Type"]
+        req = urllib.request.Request(ENGINE + self.path, data=data, method=method, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=25) as resp:
                 self._write(resp.status, resp.read())
@@ -93,7 +109,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):
         path = self._path()
-        if path in PROXY_PATHS:
+        if self._is_proxy():
             return self._proxy("GET")
         if path == "/config.json":
             return self._local_config()
@@ -104,7 +120,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         return super().do_GET()
 
     def do_POST(self):
-        if self._path() in PROXY_PATHS:
+        if self._is_proxy():
             return self._proxy("POST")
         self._write(404, b'{"error": "not found"}')
 
