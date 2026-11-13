@@ -245,6 +245,9 @@ async function ensureDb(env) {
       env.DB.prepare(
         "CREATE TABLE IF NOT EXISTS checkins (id TEXT PRIMARY KEY, name TEXT, status TEXT, note TEXT, lat REAL, lng REAL, created_at INTEGER)"
       ),
+      env.DB.prepare(
+        "CREATE TABLE IF NOT EXISTS push_subs (endpoint TEXT PRIMARY KEY, p256dh TEXT, auth TEXT, created_at INTEGER)"
+      ),
     ]);
     dbReady = true;
     return true;
@@ -489,6 +492,312 @@ async function buildStatus(env, cfg, { forceHigh = false } = {}) {
 }
 
 /* -------------------------------------------------------------- delivery -- */
+const SMS_PROVIDERS = ["twilio", "pingram", "bulksmsglobal", "infobip", "textbelt"];
+
+/** Provider order: SMS_PROVIDER wins, otherwise try every known provider. */
+function smsProviderOrder(env) {
+  const requested = String(env.SMS_PROVIDER || "").trim();
+  if (requested) return requested.split(",").map((s) => s.trim()).filter(Boolean);
+  return SMS_PROVIDERS;
+}
+
+function smsKeyFor(env, provider) {
+  if (provider === "twilio") {
+    return env.TWILIO_ACCOUNT_SID && env.TWILIO_AUTH_TOKEN && (env.TWILIO_SMS_FROM || env.TWILIO_FROM)
+      ? String(env.TWILIO_ACCOUNT_SID).trim()
+      : "";
+  }
+  const raw = {
+    pingram: env.PINGRAM_API_KEY,
+    bulksmsglobal: env.BULKSMSGLOBAL_API_KEY,
+    infobip: env.INFOBIP_API_KEY,
+    textbelt: env.TEXTBELT_API_KEY,
+  }[provider];
+  if (!raw) return raw;
+  let key = String(raw).trim();
+  if (provider === "infobip") {
+    // Portal copies can include the "App " auth scheme or wrapping quotes.
+    key = key.replace(/^App\s+/i, "").replace(/^["']|["']$/g, "").trim();
+  }
+  return key;
+}
+
+/** Normalise a stored number to E.164: 971503956422 -> +971503956422. */
+function toE164(value) {
+  let digits = String(value || "").replace(/[^\d]/g, "");
+  if (digits.startsWith("00")) digits = digits.slice(2);
+  return digits ? `+${digits}` : "";
+}
+
+/** Infobip keys are tied to a tenant host; probe the configured and global hosts. */
+function infobipHosts(env) {
+  const hosts = [env.INFOBIP_BASE_URL, "api.infobip.com", "pdlnye.api.infobip.com"]
+    .filter(Boolean)
+    .map((h) => String(h).trim().replace(/^https?:\/\//i, "").replace(/\/.*$/, ""));
+  return [...new Set(hosts)];
+}
+
+function smsRequest(env, provider, text, host) {
+  const to = toE164(env.ALERT_SMS_TO);
+  const message = text.slice(0, 600);
+
+  if (provider === "twilio") {
+    const sid = String(env.TWILIO_ACCOUNT_SID).trim();
+    const token = String(env.TWILIO_AUTH_TOKEN).trim();
+    return fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
+      method: "POST",
+      headers: {
+        authorization: `Basic ${btoa(`${sid}:${token}`)}`,
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({
+        To: to,
+        From: String(env.TWILIO_SMS_FROM || env.TWILIO_FROM).trim(),
+        Body: message,
+      }),
+    });
+  }
+
+  if (provider === "pingram") {
+    return fetch("https://api.pingram.io/sms", {
+      method: "POST",
+      headers: { authorization: `Bearer ${smsKeyFor(env, "pingram")}`, "content-type": "application/json" },
+      body: JSON.stringify({ type: "garuda_alert", to, message }),
+    });
+  }
+
+  if (provider === "bulksmsglobal") {
+    // UAE blocks unregistered alphanumeric senders; omit `from` so the
+    // account's numeric test originator is used unless SMS_SENDER is set.
+    const isUae = to.startsWith("+971");
+    return fetch("https://api.bulksmsglobal.org/v2/sms/send", {
+      method: "POST",
+      headers: { authorization: `Bearer ${smsKeyFor(env, "bulksmsglobal")}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        to,
+        message,
+        ...(env.SMS_SENDER ? { from: String(env.SMS_SENDER).trim() } : {}),
+        ...(isUae ? { country: "AE" } : {}),
+      }),
+    });
+  }
+
+  if (provider === "infobip") {
+    // Infobip keys are bound to one regional base URL; override when the
+    // portal shows a different host than the default.
+    const ibBase = host || env.INFOBIP_BASE_URL || "pdlnye.api.infobip.com";
+    return fetch(`https://${ibBase}/sms/3/messages`, {
+      method: "POST",
+      headers: { authorization: `App ${smsKeyFor(env, "infobip")}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        messages: [
+          {
+            destinations: [{ to }],
+            sender: env.INFOBIP_SENDER || "Garuda",
+            content: { text: message },
+          },
+        ],
+      }),
+    });
+  }
+
+  return fetch("https://textbelt.com/text", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ phone: to, message, key: env.TEXTBELT_API_KEY }),
+  });
+}
+
+/**
+ * Send one SMS through the configured providers in order. The first success
+ * wins; every attempt keeps the upstream status and body so a failure is
+ * diagnosable from /simulate or /sms-test instead of just "failed".
+ */
+async function sendSms(env, text) {
+  if (!env.ALERT_SMS_TO) {
+    return { status: "no secret", reason: "ALERT_SMS_TO not set", attempts: [] };
+  }
+
+  const attempts = [];
+  for (const provider of smsProviderOrder(env)) {
+    if (!smsKeyFor(env, provider)) continue;
+    const hosts = provider === "infobip" ? infobipHosts(env) : [null];
+    for (const host of hosts) {
+      try {
+        const resp = await smsRequest(env, provider, text, host);
+        const body = (await resp.text()).slice(0, 300);
+        attempts.push({ provider, host: host || undefined, status: resp.status, ok: resp.ok, body });
+        if (resp.ok) {
+          return { status: "sent", provider, host: host || undefined, upstream_status: resp.status, detail: body, attempts };
+        }
+      } catch (err) {
+        attempts.push({ provider, host: host || undefined, status: 0, ok: false, body: String(err).slice(0, 140) });
+      }
+    }
+  }
+
+  if (!attempts.length) {
+    return {
+      status: "no secret",
+      reason: "no SMS provider key set (TWILIO_ACCOUNT_SID + TWILIO_AUTH_TOKEN + TWILIO_SMS_FROM / PINGRAM_API_KEY / BULKSMSGLOBAL_API_KEY / INFOBIP_API_KEY / TEXTBELT_API_KEY)",
+      attempts,
+    };
+  }
+
+  // Report the first provider's failure: later fallbacks (often a dead key)
+  // would otherwise hide the actionable error from the intended provider.
+  const primary = attempts[0];
+  return { status: "failed", provider: primary.provider, upstream_status: primary.status, detail: primary.body, attempts };
+}
+
+/* --------------------------------------------------------------- web push -- */
+const textEncoder = new TextEncoder();
+
+function escapeXml(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function b64urlEncode(bytes) {
+  const arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  let bin = "";
+  for (let i = 0; i < arr.length; i++) bin += String.fromCharCode(arr[i]);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function b64urlDecode(value) {
+  const raw = String(value).replace(/-/g, "+").replace(/_/g, "/");
+  const padded = raw + "=".repeat((4 - (raw.length % 4)) % 4);
+  const bin = atob(padded);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function concatBytes(...chunks) {
+  const total = chunks.reduce((n, c) => n + c.length, 0);
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, at);
+    at += chunk.length;
+  }
+  return out;
+}
+
+async function hkdf(ikm, salt, info, bits) {
+  const key = await crypto.subtle.importKey("raw", ikm, "HKDF", false, ["deriveBits"]);
+  return new Uint8Array(await crypto.subtle.deriveBits({ name: "HKDF", hash: "SHA-256", salt, info }, key, bits));
+}
+
+/** RFC 8292 VAPID Authorization header for one push endpoint. */
+async function vapidAuth(endpoint, env) {
+  const header = { typ: "JWT", alg: "ES256" };
+  const payload = {
+    aud: new URL(endpoint).origin,
+    exp: Math.floor(Date.now() / 1000) + 12 * 3600,
+    sub: env.VAPID_SUBJECT || "mailto:alerts@example.org",
+  };
+  const signingInput = `${b64urlEncode(textEncoder.encode(JSON.stringify(header)))}.${b64urlEncode(
+    textEncoder.encode(JSON.stringify(payload))
+  )}`;
+  const key = await crypto.subtle.importKey(
+    "jwk",
+    JSON.parse(env.VAPID_PRIVATE_JWK),
+    { name: "ECDSA", namedCurve: "P-256" },
+    false,
+    ["sign"]
+  );
+  const sig = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key, textEncoder.encode(signingInput));
+  return `vapid t=${signingInput}.${b64urlEncode(new Uint8Array(sig))}, k=${env.VAPID_PUBLIC_KEY}`;
+}
+
+/** RFC 8291 aes128gcm payload encryption for one subscription. */
+async function encryptPush(payload, sub) {
+  const uaPublic = b64urlDecode(sub.p256dh);
+  const authSecret = b64urlDecode(sub.auth);
+  const plaintext = textEncoder.encode(JSON.stringify(payload));
+
+  const asKeys = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
+  const asPublic = new Uint8Array(await crypto.subtle.exportKey("raw", asKeys.publicKey));
+  const uaKey = await crypto.subtle.importKey("raw", uaPublic, { name: "ECDH", namedCurve: "P-256" }, false, []);
+  const shared = new Uint8Array(
+    await crypto.subtle.deriveBits({ name: "ECDH", public: uaKey }, asKeys.privateKey, 256)
+  );
+
+  const ikm = await hkdf(
+    shared,
+    authSecret,
+    concatBytes(textEncoder.encode("WebPush: info\0"), uaPublic, asPublic),
+    256
+  );
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const cek = await hkdf(ikm, salt, textEncoder.encode("Content-Encoding: aes128gcm\0"), 128);
+  const nonce = await hkdf(ikm, salt, textEncoder.encode("Content-Encoding: nonce\0"), 96);
+
+  const aes = await crypto.subtle.importKey("raw", cek, "AES-GCM", false, ["encrypt"]);
+  const sealed = new Uint8Array(
+    await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce }, aes, concatBytes(plaintext, new Uint8Array([2])))
+  );
+  const recordSize = new Uint8Array(4);
+  new DataView(recordSize.buffer).setUint32(0, 4096, false);
+  return concatBytes(salt, recordSize, new Uint8Array([65]), asPublic, sealed);
+}
+
+/** Deliver one payload to every stored browser subscription. */
+async function sendPush(env, payload) {
+  if (!env.VAPID_PRIVATE_JWK || !env.VAPID_PUBLIC_KEY) return { status: "no secret" };
+  if (!(await ensureDb(env))) return { status: "no storage" };
+
+  const rows = await env.DB.prepare("SELECT endpoint, p256dh, auth FROM push_subs LIMIT 200").all();
+  const subs = rows.results || [];
+  if (!subs.length) return { status: "no subscribers" };
+
+  let sent = 0;
+  let failed = 0;
+  const stale = [];
+
+  await Promise.all(
+    subs.map(async (sub) => {
+      try {
+        const body = await encryptPush(payload, sub);
+        const resp = await fetch(sub.endpoint, {
+          method: "POST",
+          headers: {
+            ttl: "86400",
+            "content-encoding": "aes128gcm",
+            "content-type": "application/octet-stream",
+            authorization: await vapidAuth(sub.endpoint, env),
+            urgency: "high",
+          },
+          body,
+        });
+        if (resp.ok) sent++;
+        else {
+          failed++;
+          if (resp.status === 404 || resp.status === 410) stale.push(sub.endpoint);
+        }
+      } catch (err) {
+        failed++;
+      }
+    })
+  );
+
+  for (const endpoint of stale) {
+    try {
+      await env.DB.prepare("DELETE FROM push_subs WHERE endpoint = ?").bind(endpoint).run();
+    } catch (err) {
+      /* stale cleanup is best-effort */
+    }
+  }
+
+  return { status: sent ? "sent" : "failed", sent, failed, subscribers: subs.length, stale_removed: stale.length };
+}
+
 /**
  * Push a HIGH alert out to the configured channels.
  *
@@ -514,28 +823,9 @@ async function dispatch(status, env) {
     sent.discord = "no secret";
   }
 
-  if (env.INFOBIP_API_KEY && env.ALERT_SMS_TO) {
-    try {
-      const resp = await fetch("https://pdlnye.api.infobip.com/sms/3/messages", {
-        method: "POST",
-        headers: { authorization: `App ${env.INFOBIP_API_KEY}`, "content-type": "application/json" },
-        body: JSON.stringify({
-          messages: [
-            {
-              destinations: [{ to: env.ALERT_SMS_TO }],
-              sender: env.INFOBIP_SENDER || "Garuda",
-              content: { text: status.message.slice(0, 600) },
-            },
-          ],
-        }),
-      });
-      sent.sms = resp.ok ? "sent" : `failed(${resp.status})`;
-    } catch (err) {
-      sent.sms = `error: ${String(err).slice(0, 80)}`;
-    }
-  } else {
-    sent.sms = "no secret";
-  }
+  const sms = await sendSms(env, status.message);
+  sent.sms = sms.status === "sent" ? "sent" : sms.status === "no secret" ? "no secret" : `failed(${sms.upstream_status || "?"})`;
+  sent.sms_detail = sms;
 
   if (env.SENDGRID_API_KEY && env.ALERT_EMAIL_TO) {
     try {
@@ -556,6 +846,15 @@ async function dispatch(status, env) {
   } else {
     sent.email = "no secret";
   }
+
+  const push = await sendPush(env, {
+    title: `Garuda: ${status.severity} fire risk`,
+    body: status.message,
+    url: "/dashboard",
+    tag: "garuda-alert",
+  });
+  sent.push = push.status === "sent" ? `sent(${push.sent})` : push.status;
+  sent.push_detail = push;
 
   return sent;
 }
@@ -634,10 +933,20 @@ export default {
         firms_configured: !!env.FIRMS_MAP_KEY,
         channels_configured: !!(env.DISCORD_WEBHOOK_URL && env.INFOBIP_API_KEY && env.SENDGRID_API_KEY),
         discord_configured: !!env.DISCORD_WEBHOOK_URL,
-        sms_configured: !!(env.INFOBIP_API_KEY && env.ALERT_SMS_TO),
+        sms_configured: !!(env.ALERT_SMS_TO && smsProviderOrder(env).some((p) => smsKeyFor(env, p))),
+        sms_provider: smsProviderOrder(env).find((p) => smsKeyFor(env, p)) || null,
+        sms_providers_ready: smsProviderOrder(env).filter((p) => smsKeyFor(env, p)),
         email_configured: !!(env.SENDGRID_API_KEY && env.ALERT_EMAIL_TO),
         db_ready: !!env.DB,
-        voice_configured: !!(env.INFOBIP_API_KEY && env.INFOBIP_VOICE_TO),
+        voice_configured: !!(
+          (env.TWILIO_ACCOUNT_SID &&
+            env.TWILIO_AUTH_TOKEN &&
+            (env.TWILIO_VOICE_FROM || env.TWILIO_FROM) &&
+            (env.TWILIO_VOICE_TO || env.ALERT_SMS_TO)) ||
+          (env.INFOBIP_API_KEY && env.INFOBIP_VOICE_TO)
+        ),
+        push_configured: !!(env.VAPID_PRIVATE_JWK && env.VAPID_PUBLIC_KEY),
+        vapid_public_key: env.VAPID_PUBLIC_KEY || null,
         voice_languages: VOICE_LANGS,
         reports_window_hours: 3,
       });
@@ -749,29 +1058,68 @@ export default {
         score: status.risk_score,
         impact: status.impact,
       });
-      const to = env.INFOBIP_VOICE_TO;
-      const configured = !!(env.INFOBIP_API_KEY && to);
+      const twilioTo = env.TWILIO_VOICE_TO || env.ALERT_SMS_TO;
+      // Trial accounts can get a different number per product.
+      const twilioFrom = String(env.TWILIO_VOICE_FROM || env.TWILIO_FROM || "").trim();
+      const twilioReady = !!(env.TWILIO_ACCOUNT_SID && env.TWILIO_AUTH_TOKEN && twilioFrom && twilioTo);
+      const infobipTo = env.INFOBIP_VOICE_TO;
+      const infobipReady = !!(smsKeyFor(env, "infobip") && infobipTo);
+      const configured = twilioReady || infobipReady;
+      const callProvider = twilioReady ? "twilio" : infobipReady ? "infobip" : null;
 
       if (!configured || request.method !== "POST") {
         return json({
           mode: configured ? "configured" : "simulated",
+          provider: callProvider,
           language: copy.bcp47,
           text: copy.text,
           script: copy.voice_script,
           steps: copy.steps,
           label: copy.label,
           reason: configured
-            ? "POST to place the call"
-            : "INFOBIP_API_KEY and INFOBIP_VOICE_TO not set - script generated, no call placed",
+            ? `POST to place the call via ${callProvider}`
+            : "Twilio or Infobip voice credentials not set - script generated, no call placed",
         });
       }
 
+      if (callProvider === "twilio") {
+        const voiceLang = ["en-IN", "hi-IN", "en-US", "en-GB"].includes(copy.bcp47) ? copy.bcp47 : "en-IN";
+        const twiml = `<Response><Say voice="Polly.Aditi" language="${voiceLang}">${escapeXml(copy.voice_script)}</Say></Response>`;
+        const sid = String(env.TWILIO_ACCOUNT_SID).trim();
+        const token = String(env.TWILIO_AUTH_TOKEN).trim();
+        const resp = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Calls.json`, {
+          method: "POST",
+          headers: {
+            authorization: `Basic ${btoa(`${sid}:${token}`)}`,
+            "content-type": "application/x-www-form-urlencoded",
+          },
+          body: new URLSearchParams({
+            To: toE164(twilioTo),
+            From: twilioFrom,
+            Twiml: twiml,
+          }),
+        });
+        const detail = (await resp.text()).slice(0, 300);
+        return json(
+          {
+            mode: resp.ok ? "live" : "failed",
+            provider: "twilio",
+            language: copy.bcp47,
+            text: copy.text,
+            script: copy.voice_script,
+            upstream_status: resp.status,
+            detail,
+          },
+          resp.ok ? 200 : 502
+        );
+      }
+
       const voiceLang = copy.bcp47.split("-")[0];
-      const resp = await fetch("https://api.infobip.com/voice/1/calls", {
+      const resp = await fetch(`https://${env.INFOBIP_BASE_URL || "api.infobip.com"}/voice/1/calls`, {
         method: "POST",
-        headers: { authorization: `App ${env.INFOBIP_API_KEY}`, "content-type": "application/json" },
+        headers: { authorization: `App ${smsKeyFor(env, "infobip")}`, "content-type": "application/json" },
         body: JSON.stringify({
-          destinations: [{ to }],
+          destinations: [{ to: infobipTo }],
           from: env.INFOBIP_VOICE_FROM || "Garuda",
           language: voiceLang,
           ncco: [{ action: "say", text: copy.voice_script, language: voiceLang }],
@@ -781,6 +1129,7 @@ export default {
       return json(
         {
           mode: resp.ok ? "live" : "failed",
+          provider: "infobip",
           language: copy.bcp47,
           text: copy.text,
           script: copy.voice_script,
@@ -801,6 +1150,79 @@ export default {
         );
       }
       return new Response(asset.body, { headers: { "content-type": "application/json", "cache-control": "no-store" } });
+    }
+
+    if (url.pathname === "/push/status") {
+      let subscribers = 0;
+      if (await ensureDb(env)) {
+        const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM push_subs").first();
+        subscribers = row?.n ?? 0;
+      }
+      return json({
+        configured: !!(env.VAPID_PRIVATE_JWK && env.VAPID_PUBLIC_KEY),
+        subscribers,
+        vapid_public_key: env.VAPID_PUBLIC_KEY || null,
+      });
+    }
+
+    if (url.pathname === "/push/subscribe" && request.method === "POST") {
+      if (!(await ensureDb(env))) return json({ error: "storage not ready" }, 503);
+      const body = await request.json().catch(() => ({}));
+      const endpoint = String(body.endpoint || "").slice(0, 500);
+      const p256dh = String(body.keys?.p256dh || "").slice(0, 200);
+      const auth = String(body.keys?.auth || "").slice(0, 100);
+      if (!endpoint.startsWith("https://") || !p256dh || !auth) {
+        return json({ error: "endpoint, keys.p256dh and keys.auth required" }, 400);
+      }
+      await env.DB.prepare(
+        "INSERT INTO push_subs (endpoint, p256dh, auth, created_at) VALUES (?,?,?,?) ON CONFLICT(endpoint) DO UPDATE SET p256dh = excluded.p256dh, auth = excluded.auth"
+      )
+        .bind(endpoint, p256dh, auth, Date.now())
+        .run();
+      const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM push_subs").first();
+      return json({ ok: true, subscribers: row?.n ?? 0 }, 201);
+    }
+
+    if (url.pathname === "/push/unsubscribe" && request.method === "POST") {
+      if (!(await ensureDb(env))) return json({ error: "storage not ready" }, 503);
+      const body = await request.json().catch(() => ({}));
+      await env.DB.prepare("DELETE FROM push_subs WHERE endpoint = ?").bind(String(body.endpoint || "")).run();
+      return json({ ok: true });
+    }
+
+    if (url.pathname === "/push/test" && request.method === "POST") {
+      const status = await buildStatus(env, cfg, { forceHigh: true });
+      const result = await sendPush(env, {
+        title: `Garuda: ${status.severity} fire risk`,
+        body: status.message,
+        url: "/dashboard",
+        tag: "garuda-test",
+      });
+      return json(result, result.status === "sent" ? 200 : 502);
+    }
+
+    if (url.pathname === "/sms-test") {
+      const ready = smsProviderOrder(env).filter((p) => smsKeyFor(env, p));
+      const masked = env.ALERT_SMS_TO ? `***${String(env.ALERT_SMS_TO).slice(-4)}` : null;
+      // GET ?send=1 lets the check run from a browser, no curl needed.
+      const send = request.method === "POST" || url.searchParams.get("send") === "1";
+
+      if (!send) {
+        return json({
+          to: masked,
+          provider_order: smsProviderOrder(env),
+          providers_ready: ready,
+          configured: !!(env.ALERT_SMS_TO && ready.length),
+          hint: ready.length
+            ? "Open /sms-test?send=1 (or POST) to send a test SMS through the provider chain"
+            : "Set ALERT_SMS_TO plus one of PINGRAM_API_KEY / BULKSMSGLOBAL_API_KEY / INFOBIP_API_KEY / TEXTBELT_API_KEY",
+        });
+      }
+
+      const status = await buildStatus(env, cfg, { forceHigh: true });
+      const body = `Garuda test: ${status.severity} fire risk ${status.risk_score}/100 - ${status.message}`;
+      const result = await sendSms(env, body.slice(0, 500));
+      return json(result, result.status === "sent" ? 200 : 502);
     }
 
     if (url.pathname === "/dashboard" || url.pathname === "/dashboard/") {
