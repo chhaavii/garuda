@@ -23,6 +23,7 @@ async function init() {
   if (cfg?.cesium_ion_token) Cesium.Ion.defaultAccessToken = cfg.cesium_ion_token;
   initMap();
   initVoice();
+  initPush();
   wireActions();
   await refreshStatus();
   await refreshFires();
@@ -456,6 +457,7 @@ function renderChannels(s) {
     ["Discord webhook", cfg?.discord_configured ? "configured" : "no secret", last.discord],
     ["Infobip SMS", cfg?.sms_configured ? "configured" : "no secret", last.sms],
     ["SendGrid email", cfg?.email_configured ? "configured" : "no secret", last.email],
+    ["Browser push", cfg?.push_configured ? "configured" : "no secret", last.push],
     ["Pi LED / GPIO", "local engine only", null],
   ];
   $("channels").innerHTML = rows
@@ -511,6 +513,95 @@ async function renderBacktest() {
   } catch (err) {
     $("bt-grid").innerHTML = `<div class="wide"><dt>status</dt><dd>not computed</dd></div>`;
     $("bt-note").textContent = err.message;
+  }
+}
+
+/* ------------------------------------------------------ browser alerts ---- */
+function b64ToBytes(value) {
+  const padded = String(value).replace(/-/g, "+").replace(/_/g, "/");
+  const pad = "=".repeat((4 - (padded.length % 4)) % 4);
+  const bin = atob(padded + pad);
+  return Uint8Array.from(bin, (c) => c.charCodeAt(0));
+}
+
+async function initPush() {
+  const btn = $("push-btn");
+  const note = $("push-note");
+  if (!btn) return;
+
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+    btn.disabled = true;
+    btn.textContent = "🔔 alerts unsupported";
+    return;
+  }
+
+  let reg = null;
+  try {
+    reg = await navigator.serviceWorker.register("/sw.js");
+  } catch (err) {
+    btn.disabled = true;
+    btn.textContent = "🔔 alerts unavailable";
+    return;
+  }
+
+  const current = await reg.pushManager.getSubscription().catch(() => null);
+  setPushState(!!current);
+
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    try {
+      const existing = await reg.pushManager.getSubscription();
+      if (existing) {
+        const resp = await fetch("/push/test", { method: "POST" });
+        const out = await resp.json().catch(() => ({}));
+        const ok = out.status === "sent";
+        toast(ok ? "Test notification sent" : `Push: ${out.status || resp.status}`, ok ? "info" : "error");
+        return;
+      }
+
+      if (!cfg?.vapid_public_key) {
+        toast("Push is not configured on the server", "error");
+        return;
+      }
+
+      const permission = await Notification.requestPermission();
+      if (permission !== "granted") {
+        toast("Notifications are blocked in this browser", "error");
+        return;
+      }
+
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: b64ToBytes(cfg.vapid_public_key),
+      });
+
+      const resp = await fetch("/push/subscribe", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(sub.toJSON()),
+      });
+      if (!resp.ok) throw new Error(await resp.text());
+
+      setPushState(true);
+      toast("Browser alerts enabled — sending a test", "info");
+      const test = await fetch("/push/test", { method: "POST" });
+      const out = await test.json().catch(() => ({}));
+      if (out.status !== "sent") toast(`Subscribed, but test send: ${out.status || test.status}`, "error");
+    } catch (err) {
+      toast("Could not enable alerts: " + err.message, "error");
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  function setPushState(on) {
+    btn.textContent = on ? "🔔 Alerts on · send test" : "🔔 Get browser alerts";
+    btn.classList.toggle("primary", on);
+    btn.classList.toggle("ghost", !on);
+    note.hidden = false;
+    note.textContent = on
+      ? "This browser shows a notification on every HIGH alert."
+      : "Free browser notifications — no phone number, no account.";
   }
 }
 
