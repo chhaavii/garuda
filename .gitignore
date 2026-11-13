@@ -1,5 +1,13 @@
 # local secrets - never committed
 config.secrets.json
+.vapid-private.jwk
+.vapid-public.txt
+.twilio-*.txt
+.discord-webhook.txt
+.infobip.txt
+.sendgrid.txt
+.secrets.txt
+ALERT_SMS_TO
 .env
 .dev.vars
 *.log
