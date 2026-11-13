@@ -1,5 +1,7 @@
 # Garuda — ಗರುಡ
 
+**Live demo:** https://site-16ff0cf78add488dbfbbcd157c7ed235.freebuff.page · **Dashboard:** https://site-16ff0cf78add488dbfbbcd157c7ed235.freebuff.page/dashboard
+
 Free NASA fire data and live weather, turned into a plain-language warning before it reaches
 your street. Landing page at `/`, operator dashboard at `/dashboard`.
 
