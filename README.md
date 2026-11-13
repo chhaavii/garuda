@@ -59,7 +59,12 @@ train_baseline.py    optional ML baseline → ml_model.json (OFF by default)
 | `GET /checkin` | family check-ins from the last 12 h, with safe/help counts |
 | `POST /checkin` | body `{name, status: "safe" | "help"}` → stored in D1 |
 | `GET /voice?lang=en|kn|hi` | the exact broadcast script, no call placed |
-| `POST /voice?lang=…` | places an Infobip Voice call when a key and number are configured |
+| `POST /voice?lang=…` | places a Twilio or Infobip voice call when credentials are configured |
+| `GET /sms-test` | which SMS providers are configured, without sending |
+| `GET /sms-test?send=1` or `POST /sms-test` | sends one test SMS and returns every upstream status/body |
+| `GET /push/status` | Web Push configuration and subscriber count |
+| `POST /push/subscribe` / `POST /push/unsubscribe` | store or remove a browser push subscription in D1 |
+| `POST /push/test` | send one browser notification to every subscriber |
 
 ## Secrets
 
@@ -71,7 +76,18 @@ you want real detections:
 | `FIRMS_MAP_KEY` | NASA FIRMS detections (otherwise SIMULATED) |
 | `CESIUM_ION_TOKEN` | Cesium terrain/imagery; without it the map uses OSM on a flat ellipsoid |
 | `DISCORD_WEBHOOK_URL` | Discord alerts (Worker and local engine) |
-| `INFOBIP_API_KEY`, `INFOBIP_SENDER`, `ALERT_SMS_TO` | SMS alerts (Worker and local engine) |
+| `ALERT_SMS_TO` | SMS recipient (required for any SMS provider) |
+| `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM` | Twilio credentials (trial accounts must verify the recipient first) |
+| `TWILIO_SMS_FROM` | SMS sender when Twilio's SMS trial number differs from the voice number |
+| `TWILIO_VOICE_TO` | voice call target for Twilio; defaults to `ALERT_SMS_TO` |
+| `TWILIO_VOICE_FROM` | optional voice sender when Twilio's trial number differs per product |
+| `SMS_PROVIDER` | optional provider order, e.g. `twilio` (default: twilio, pingram, bulksmsglobal, infobip, textbelt) |
+| `PINGRAM_API_KEY` | SMS via Pingram (free tier: 100 SMS/mo, no card) |
+| `BULKSMSGLOBAL_API_KEY`, `SMS_SENDER` | SMS via BulkSMSGlobal (UAE free trial: 20 SMS) |
+| `TEXTBELT_API_KEY` | SMS via TextBelt (paid key; the free key blocks many countries) |
+| `INFOBIP_API_KEY`, `INFOBIP_SENDER` | SMS and voice via Infobip (Worker and local engine) |
+| `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_JWK` | Web Push browser notifications (EC P-256 VAPID keypair) |
+| `VAPID_SUBJECT` | optional VAPID contact, defaults to `mailto:alerts@example.org` |
 | `SENDGRID_API_KEY`, `ALERT_EMAIL_TO`, `SENDGRID_FROM` | Email alerts (Worker and local engine) |
 | `INFOBIP_VOICE_TO`, `INFOBIP_VOICE_FROM` | Infobip Voice outbound call target and caller ID; without them `/voice` returns the script only |
 
